@@ -36,6 +36,9 @@ import {image_resizer} from "image_resizer";
 import * as moment from "moment";
 import {PlayerAutocomplete} from "PlayerAutocomplete";
 import {EmbeddedChat} from "Chat";
+import {GameList} from "GameList";
+import {comm_socket} from "sockets";
+import * as preferences from "preferences";
 
 
 declare var swal;
@@ -47,6 +50,11 @@ interface GroupProperties {
 }
 
 export class Group extends React.PureComponent<GroupProperties, any> {
+
+    last_refreshGamelist: number;
+    next_refreshGamelist: any;
+    auto_refreshGamelist: number;
+
     refs: {
         members;
         news;
@@ -84,6 +92,14 @@ export class Group extends React.PureComponent<GroupProperties, any> {
             new_news_body: "",
             invite_result: null,
             editing_news: null,
+            gamelistPage: 1,
+            gamelistNum_pages: 1,
+            gamelistPage_size: preferences.get("observed-games-page-size"),
+            gamelistPage_size_text_input: preferences.get("observed-games-page-size"),
+            gamelistViewing: preferences.get("observed-games-viewing"), /* live / correspondence */
+            game_list: [],
+            live_game_count: 0,
+            corr_game_count: 0,
         };
     }
 
@@ -94,9 +110,20 @@ export class Group extends React.PureComponent<GroupProperties, any> {
     componentDidMount() {
         window.document.title = _("Group");
         this.resolve(parseInt(this.props.match.params.group_id));
+        comm_socket.on("gamelist-count", this.updateGamelistCounts);
+        comm_socket.on("connect", this.doSubscribe);
+        if (comm_socket.connected) {
+            this.doSubscribe();
+        }
+        this.refreshGamelist();
     }
     componentWillUnmount() {
         setExtraActionCallback(null);
+        comm_socket.off("gamelist-count", this.updateGamelistCounts);
+        comm_socket.off("connect", this.doSubscribe);
+        if (comm_socket.connected) {
+            comm_socket.send("gamelist/count/unsubscribe");
+        }
     }
     UNSAFE_componentWillReceiveProps(next_props) {
         let group_id = parseInt(next_props.match.params.group_id);
@@ -385,6 +412,91 @@ export class Group extends React.PureComponent<GroupProperties, any> {
         this.setState({user_to_invite: user});
     }
 
+    doSubscribe = () => {
+        comm_socket.send("gamelist/count/subscribe");
+    }
+    updateGamelistCounts = (counts) => {
+        console.log(counts);
+        this.setState({
+            live_game_count: counts.live,
+            corr_game_count: counts.correspondence,
+        });
+    }
+    setGamelistPageSize = (ev) => {
+        if (ev.target.value && parseInt(ev.target.value) >= 3 && parseInt(ev.target.value) <= 100) {
+            let ct: number = parseInt(ev.target.value);
+            preferences.set("observed-games-page-size", ct);
+            this.setState({
+                gamelistPage_size: ct,
+                gamelistPage_size_text_input: ct
+            });
+            this.setGamelistPage(1);
+            setTimeout(this.refreshGamelist, 1);
+        } else {
+            this.setState({gamelistPage_size_text_input: ev.target.value});
+        }
+    }
+    refreshGamelist = () => {
+        let now = Date.now();
+        //if (this.last_refreshGamelist != null && (now - this.last_refreshGamelist < 1000.0)) {
+        if (this.last_refreshGamelist != null && (now - this.last_refreshGamelist < 1.0)) {
+            console.warn("Slow down");
+            if (!this.next_refreshGamelist) {
+                this.next_refreshGamelist = setTimeout(() => {
+                    this.next_refreshGamelist = null;
+                    this.refreshGamelist();
+                }, 1000);
+            }
+            return;
+        }
+        this.last_refreshGamelist = now;
+
+        comm_socket.send("gamelist/query", {
+            list: this.state.gamelistViewing,
+            sort_by: "rank",
+            from: (this.state.gamelistPage - 1) * this.state.gamelistPage_size,
+            limit: this.state.gamelistPage_size
+        },
+            (res) => {
+                this.setState({
+                    gamelistNum_pages: Math.ceil(res.size / this.state.gamelistPage_size),
+                    game_list: res.results,
+                    gamelistPage: Math.max(1, Math.min(this.state.gamelistPage, this.state.gamelistNum_pages)),
+                });
+            }
+        );
+    }
+    prevGamelistPage = () => {
+        this.setGamelistPage(this.state.gamelistPage - 1);
+    }
+    nextGamelistPage = () => {
+        if (typeof(this.state.gamelistPage) === "number") {
+            this.setGamelistPage(this.state.gamelistPage + 1);
+        } else {
+            this.setGamelistPage(1);
+        }
+    }
+    setGamelistPage = (ev_or_page) => {
+        let page = parseInt(typeof(ev_or_page) === "number" ? ev_or_page : (ev_or_page.target as any).value);
+        if (isNaN(page)) {
+            this.setState({gamelistPage: ""});
+            return;
+        }
+        page = Math.max(1, Math.min(Math.ceil(
+            (this.state.gamelistViewing === "live" ? this.state.live_game_count : this.state.corr_game_count)
+                / this.state.gamelistPage_size), page));
+        this.setState({gamelistPage: page});
+        setTimeout(this.refreshGamelist, 1);
+    }
+
+    viewLive = () => {
+        this.setState({gamelistViewing: "live", gamelistPage: 0});
+        setTimeout(this.refreshGamelist, 1);
+    }
+    viewCorrespondence = () => {
+        this.setState({gamelistViewing: "corr", gamelistPage: 0});
+        setTimeout(this.refreshGamelist, 1);
+    }
 
     render() {
         let user = data.get("user");
@@ -610,6 +722,34 @@ export class Group extends React.PureComponent<GroupProperties, any> {
 
                     {(((group.is_public && !group.hide_details) || group.is_member ) || null) && <EmbeddedChat channel={`group-${this.state.group.id}`} updateTitle={false} />}
 
+                    { true && <div className="ObserveGames">
+							<div className="container">
+								<div className="games">
+									<div className="header">
+											<div className="btn-group">
+												<button className={this.state.gamelistViewing === "live" ? "active" : ""} onClick={this.viewLive}>{interpolate(_("{{count}} live games"), {count: this.state.live_game_count})}</button>
+												<button className={this.state.gamelistViewing === "corr" ? "active" : ""} onClick={this.viewCorrespondence}>{interpolate(_("{{count}} correspondence games"), {count: this.state.corr_game_count})}</button>
+											</div>
+											<div className="page-controls">
+												<div className="left">
+													{this.state.page > 1 ? <i className="fa fa-step-backward" onClick={this.prevGamelistPage}/> : <i className="fa"/>}
+													<input onChange={this.setGamelistPage} value={this.state.gamelistPage}/>
+													<span className="of"> / </span>
+													<span className="total">{this.state.gamelistNum_pages.toString()}</span>
+													{this.state.gamelistPage < this.state.gamelistNum_pages ? <i className="fa fa-step-forward" onClick={this.nextGamelistPage}/> : <i className="fa"/>}
+												</div>
+												<div className="right">
+													<label className="labelshow">{_("Show") + ":"}</label>
+													<input className="show" onChange={this.setGamelistPageSize} value={this.state.gamelistPage_size_text_input} type="number" min="3" max="100" step="1" />
+												</div>
+											</div>
+										</div>
+									</div>
+								</div>
+								<GameList list={this.state.game_list} disableSort={true} emptyMessage={_("No games being played")} />
+						</div>
+					}
+
                     <Card>
                         {(group.has_tournament_records || null) &&
                             <div>
@@ -690,6 +830,7 @@ export class Group extends React.PureComponent<GroupProperties, any> {
                             name="members"
                             source={`groups/${group.id}/members`}
                             groom={(u_arr) => u_arr.map((u) => player_cache.update(u.user))}
+                            orderBy={["username"]}
                             columns={[
                                 {header: _("Members"), className: "", render: (X) => <Player icon user={X} online/>},
                             ]}
