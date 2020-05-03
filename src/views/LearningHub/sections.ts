@@ -88,10 +88,10 @@ export let sections = [
         [Capture, Defend, /*Territory, */ EndingTheGame]],
     [pgettext("Learning hub section title", "Basics"),
         [TheBoard, Ladders, SnapBack, Seki, Ko ]],
-    /*
+    
     [pgettext("Learning hub section title", "Intermediate"),
-        [TheBoard, Ladders, SnapBack, FalseEyes, CuttingStones, JumpingStones]],
-    [pgettext("Learning hub section title", "Advanced"),
+        [TheBoard, Ladders, SnapBack, Seki, Ko ]],
+    /*[pgettext("Learning hub section title", "Advanced"),
         [Semeai, CountingLiberties, Seki, Ko ]],
     */
     /*
